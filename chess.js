@@ -845,7 +845,12 @@ class ChessUI {
                     else sq.classList.add('valid-move');
                 }
 
-                sq.textContent = piece ? PIECES[piece.type][piece.color] : '';
+                if (piece) {
+                    sq.textContent = PIECES[piece.type][piece.color];
+                    sq.classList.add('piece-' + piece.color);
+                } else {
+                    sq.textContent = '';
+                }
             }
         }
     }
