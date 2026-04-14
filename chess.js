@@ -462,7 +462,13 @@ class ChessGame {
         return true;
     }
 
-    // Parse move input: supports "e2-e4", "e2e4", "e2 e4", "Nf3", "O-O", etc.
+    // German to English piece mapping
+    translateGermanPiece(ch) {
+        const map = { 'S': 'N', 'L': 'B', 'T': 'R', 'D': 'Q', 'K': 'K' };
+        return map[ch] || ch;
+    }
+
+    // Parse move input: supports "e2-e4", "e2e4", "Nf3", "Sf3", "O-O", etc.
     parseAndMakeMove(input) {
         input = input.trim();
         if (!input) return { error: 'Bitte einen Zug eingeben' };
@@ -477,29 +483,29 @@ class ChessGame {
         }
 
         // Coordinate notation: e2-e4, e2e4, e2 e4
-        const coordMatch = input.match(/^([a-h])([1-8])[\s\-]?([a-h])([1-8])(?:\s*=?\s*([QRBN]))?$/i);
+        const coordMatch = input.match(/^([a-h])([1-8])[\s\-]?([a-h])([1-8])(?:\s*=?\s*([QRBNSLTD]))?$/i);
         if (coordMatch) {
             const fc = FILES.indexOf(coordMatch[1].toLowerCase());
             const fr = RANKS.indexOf(coordMatch[2]);
             const tc = FILES.indexOf(coordMatch[3].toLowerCase());
             const tr = RANKS.indexOf(coordMatch[4]);
-            const promo = coordMatch[5]?.toUpperCase();
+            const promo = coordMatch[5] ? this.translateGermanPiece(coordMatch[5].toUpperCase()) : undefined;
             return this.tryCoordMove(fr, fc, tr, tc, promo);
         }
 
-        // Algebraic notation: Nf3, Bxe5, exd5, e4, Qd1, Rad1, R1a3, etc.
-        const algMatch = input.match(/^([KQRBN])?([a-h])?([1-8])?(x)?([a-h])([1-8])(?:\s*=?\s*([QRBN]))?[+#]?$/);
+        // Algebraic notation: Nf3, Sf3, Bxe5, Lxe5, Dd1, Tad1, etc.
+        const algMatch = input.match(/^([KQRBNSLTD])?([a-h])?([1-8])?(x)?([a-h])([1-8])(?:\s*=?\s*([QRBNSLTD]))?[+#]?$/);
         if (algMatch) {
-            const pieceType = algMatch[1] || 'P';
+            const pieceType = algMatch[1] ? this.translateGermanPiece(algMatch[1]) : 'P';
             const disambigFile = algMatch[2] ? FILES.indexOf(algMatch[2]) : null;
             const disambigRank = algMatch[3] ? RANKS.indexOf(algMatch[3]) : null;
             const tc = FILES.indexOf(algMatch[5]);
             const tr = RANKS.indexOf(algMatch[6]);
-            const promo = algMatch[7]?.toUpperCase();
+            const promo = algMatch[7] ? this.translateGermanPiece(algMatch[7].toUpperCase()) : undefined;
             return this.tryAlgebraicMove(pieceType, disambigFile, disambigRank, tr, tc, promo);
         }
 
-        return { error: 'Ungueltiges Format. Versuche z.B. e2-e4 oder Nf3' };
+        return { error: 'Ungueltiges Format. Versuche z.B. e2-e4, Sf3 oder Nf3' };
     }
 
     tryCastling(side) {
