@@ -797,8 +797,9 @@ class ChessUI {
         // Analysis board
         this.analysis = new AnalysisUI(this);
 
-        // Theory panel
+        // Theory panel + Engine-basierte Stellungsbewertung
         this.theory = new TheoryPanel(this);
+        this.positionEval = new PositionEval(this);
 
         this._loading = true;
         this.render();
@@ -1053,8 +1054,12 @@ class ChessUI {
         this.renderMoveList();
         this.tickClocks();
         if (this.analysis) this.analysis.onMainUpdated();
-        // Theory follows the analysis board (after onMainUpdated it mirrors main)
-        if (this.theory && this.analysis) this.theory.refresh(this.analysis.game.toFEN());
+        // Theory + PositionEval folgen dem Analyse-Brett (nach onMainUpdated gespiegelt)
+        if (this.analysis) {
+            const fen = this.analysis.game.toFEN();
+            if (this.theory) this.theory.refresh(fen);
+            if (this.positionEval) this.positionEval.refresh(fen);
+        }
         this.updateEvaluation();
     }
 
@@ -1579,8 +1584,10 @@ class AnalysisUI {
         const t = document.getElementById('analysis-turn');
         if (t) t.textContent = (this.game.turn === 'white' ? 'Weiss' : 'Schwarz') + ' am Zug';
 
-        // Refresh theory + evaluation for the new analysis FEN
-        if (this.main && this.main.theory) this.main.theory.refresh(this.game.toFEN());
+        // Refresh theory + engine-Bewertung + Heuristik für das Analyse-FEN
+        const fen = this.game.toFEN();
+        if (this.main && this.main.theory) this.main.theory.refresh(fen);
+        if (this.main && this.main.positionEval) this.main.positionEval.refresh(fen);
         if (this.main) this.main.updateEvaluation();
     }
 
@@ -1591,6 +1598,231 @@ class AnalysisUI {
         this.validMoves = [];
         this.render();
         return true;
+    }
+}
+
+
+// ─── Stockfish-Engine (asm.js, single-threaded, On-Demand) ───────
+
+class StockfishEngine {
+    constructor() {
+        this.worker = null;
+        this.ready = false;
+        this.onInfo = null;
+        this.onBest = null;
+    }
+
+    async ensure() {
+        if (this.worker) return;
+        // Fetch + blob-wrap damit der Worker same-origin läuft (GH Pages: kein COOP/COEP)
+        const src = 'https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.js';
+        const resp = await fetch(src);
+        if (!resp.ok) throw new Error('Stockfish-Download fehlgeschlagen (' + resp.status + ')');
+        const text = await resp.text();
+        const blob = new Blob([text], { type: 'application/javascript' });
+        this.worker = new Worker(URL.createObjectURL(blob));
+        this.worker.onmessage = (e) => this.onLine(String(e.data));
+        this.worker.postMessage('uci');
+        this.worker.postMessage('setoption name Hash value 32');
+        this.worker.postMessage('isready');
+    }
+
+    onLine(line) {
+        if (line.startsWith('info') && /score (cp|mate)/.test(line)) {
+            const depth = (line.match(/depth (\d+)/) || [, null])[1];
+            const cp = (line.match(/score cp (-?\d+)/) || [, null])[1];
+            const mate = (line.match(/score mate (-?\d+)/) || [, null])[1];
+            const pv = (line.match(/ pv (.+)$/) || [, ''])[1];
+            if (this.onInfo) this.onInfo({
+                depth: depth ? +depth : null,
+                cp: cp != null ? +cp : null,
+                mate: mate != null ? +mate : null,
+                pv: pv ? pv.split(/\s+/) : []
+            });
+        } else if (line.startsWith('bestmove')) {
+            const best = line.split(/\s+/)[1];
+            if (this.onBest) this.onBest(best);
+        }
+    }
+
+    async analyze(fen, depth, onInfo, onBest) {
+        await this.ensure();
+        this.onInfo = onInfo;
+        this.onBest = onBest;
+        this.worker.postMessage('stop');
+        this.worker.postMessage('ucinewgame');
+        this.worker.postMessage('position fen ' + fen);
+        this.worker.postMessage('go depth ' + depth);
+    }
+
+    stop() {
+        if (this.worker) this.worker.postMessage('stop');
+    }
+}
+
+function formatCp(cp) {
+    if (cp == null || isNaN(cp)) return '—';
+    const v = cp / 100;
+    return (v >= 0 ? '+' : '') + v.toFixed(2);
+}
+
+// UCI-Move (e2e4, e7e8q) → SAN-Notation via unsere ChessGame
+function uciPvToSan(startFen, uciList) {
+    if (!uciList || !uciList.length) return '';
+    // Replay from start position using main board — use a fresh ChessGame + FEN load is not supported.
+    // Fallback: show UCI pretty-printed (e2e4 → e2-e4).
+    return uciList.slice(0, 8).map(u => {
+        if (u.length < 4) return u;
+        return u.slice(0, 2) + '-' + u.slice(2, 4) + (u.length > 4 ? '=' + u[4].toUpperCase() : '');
+    }).join(' ');
+}
+
+
+class PositionEval {
+    constructor(main) {
+        this.main = main;
+        this.engine = null;
+        this.lastFen = null;
+        this.lichessCache = new Map();
+
+        const btnDeep = document.getElementById('engine-deep');
+        const btnStop = document.getElementById('engine-stop');
+        if (btnDeep) btnDeep.addEventListener('click', () => this.deepAnalyze());
+        if (btnStop) btnStop.addEventListener('click', () => this.stopAnalyze());
+    }
+
+    refresh(fen) {
+        if (fen === this.lastFen) return;
+        this.lastFen = fen;
+        // Stop any running engine search for stale position
+        this.stopAnalyze(true);
+        // Reset display
+        this.setScore(null, 'chessdb / lichess');
+        this.setDepth('');
+        this.setPV('');
+        // Lichess cloud eval (background)
+        this.fetchLichess(fen);
+    }
+
+    // Called from TheoryPanel when chessdb data arrives for this position
+    setFromChessdb(moves) {
+        if (!moves || !moves.length) return;
+        // Best move's score is the position's evaluation (side-to-move relative → convert to white-centric)
+        const stm = (this.lastFen || '').split(' ')[1];
+        const cp = Number(moves[0].score) || 0;
+        const cpW = stm === 'b' ? -cp : cp;
+        this.setScore(cpW, 'chessdb.cn (Cloud-Buch)');
+    }
+
+    async fetchLichess(fen) {
+        if (this.lichessCache.has(fen)) {
+            const cached = this.lichessCache.get(fen);
+            if (cached) this.applyLichess(cached, fen);
+            return;
+        }
+        try {
+            const r = await fetch('https://lichess.org/api/cloud-eval?fen=' + encodeURIComponent(fen) + '&multiPv=1');
+            if (!r.ok) { this.lichessCache.set(fen, null); return; }
+            const data = await r.json();
+            this.lichessCache.set(fen, data);
+            if (fen !== this.lastFen) return;
+            this.applyLichess(data, fen);
+        } catch (e) { /* ignore */ }
+    }
+
+    applyLichess(data, fen) {
+        const pv0 = data && data.pvs && data.pvs[0];
+        if (!pv0) return;
+        const stm = fen.split(' ')[1];
+        if (pv0.mate !== undefined) {
+            const mW = stm === 'b' ? -pv0.mate : pv0.mate;
+            this.setMate(mW, 'Lichess Cloud (Stockfish)');
+        } else if (pv0.cp !== undefined) {
+            const cpW = stm === 'b' ? -pv0.cp : pv0.cp;
+            this.setScore(cpW, 'Lichess Cloud (Stockfish)');
+        }
+        this.setDepth('Tiefe ' + data.depth + ' · ' + Math.round(data.knodes / 1000) + ' MN');
+        this.setPV(uciPvToSan(fen, (pv0.moves || '').split(/\s+/)));
+    }
+
+    async deepAnalyze() {
+        if (!this.lastFen) return;
+        if (!this.engine) this.engine = new StockfishEngine();
+        const fen = this.lastFen;
+        const stm = fen.split(' ')[1];
+        const btnDeep = document.getElementById('engine-deep');
+        const btnStop = document.getElementById('engine-stop');
+        if (btnDeep) { btnDeep.disabled = true; btnDeep.textContent = 'Lade Engine …'; }
+        if (btnStop) btnStop.style.display = 'inline-block';
+
+        try {
+            await this.engine.analyze(fen, 20,
+                (info) => {
+                    if (fen !== this.lastFen) return;
+                    if (btnDeep) btnDeep.textContent = 'Analysiert … d' + (info.depth || '?');
+                    if (info.mate !== null) {
+                        const mW = stm === 'b' ? -info.mate : info.mate;
+                        this.setMate(mW, 'Stockfish lokal');
+                    } else if (info.cp !== null) {
+                        const cpW = stm === 'b' ? -info.cp : info.cp;
+                        this.setScore(cpW, 'Stockfish lokal');
+                    }
+                    if (info.depth) this.setDepth('Tiefe ' + info.depth);
+                    if (info.pv && info.pv.length) this.setPV(uciPvToSan(fen, info.pv));
+                },
+                () => {
+                    if (btnDeep) { btnDeep.disabled = false; btnDeep.textContent = 'Tiefer analysieren'; }
+                    if (btnStop) btnStop.style.display = 'none';
+                });
+        } catch (e) {
+            console.error('Stockfish:', e);
+            if (btnDeep) { btnDeep.disabled = false; btnDeep.textContent = 'Engine fehlgeschlagen – erneut versuchen'; }
+            if (btnStop) btnStop.style.display = 'none';
+        }
+    }
+
+    stopAnalyze(silent) {
+        if (this.engine) this.engine.stop();
+        const btnDeep = document.getElementById('engine-deep');
+        const btnStop = document.getElementById('engine-stop');
+        if (btnDeep && !silent) { btnDeep.disabled = false; btnDeep.textContent = 'Tiefer analysieren'; }
+        if (btnStop) btnStop.style.display = 'none';
+    }
+
+    setScore(cpW, src) {
+        const el = document.getElementById('eng-score');
+        const srcEl = document.getElementById('eng-source');
+        if (el) {
+            el.classList.remove('good', 'bad', 'mate');
+            if (cpW == null) el.textContent = '—';
+            else {
+                el.textContent = formatCp(cpW);
+                if (cpW > 50) el.classList.add('good');
+                else if (cpW < -50) el.classList.add('bad');
+            }
+        }
+        if (srcEl) srcEl.textContent = src || '';
+    }
+
+    setMate(mW, src) {
+        const el = document.getElementById('eng-score');
+        const srcEl = document.getElementById('eng-source');
+        if (el) {
+            el.classList.remove('good', 'bad');
+            el.classList.add('mate');
+            el.textContent = (mW >= 0 ? '#' : '#-') + Math.abs(mW);
+        }
+        if (srcEl) srcEl.textContent = src || '';
+    }
+
+    setDepth(txt) {
+        const el = document.getElementById('eng-depth');
+        if (el) el.textContent = txt;
+    }
+
+    setPV(txt) {
+        const el = document.getElementById('eng-pv');
+        if (el) el.textContent = txt ? 'PV: ' + txt : '';
     }
 }
 
@@ -1653,6 +1885,8 @@ class TheoryPanel {
     renderChessdb(data) {
         if (this.subEl) this.subEl.textContent = 'chessdb.cn – Cloud-Eroeffnungsbuch';
         if (this.openingEl) this.openingEl.textContent = '';
+        // Position-Eval: best move's score = position eval
+        if (this.main.positionEval) this.main.positionEval.setFromChessdb(data.moves);
         const moves = data.moves.slice(0, 5);
         this.listEl.innerHTML = '';
         for (const m of moves) {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fernschach</title>
-    <link rel="stylesheet" href="style.css?v=20">
+    <link rel="stylesheet" href="style.css?v=21">
 </head>
 <body>
     <div class="app">
@@ -155,6 +155,21 @@
                         <div class="eval-line" id="eval-line-2">&mdash;</div>
                         <div class="eval-line" id="eval-line-3">&mdash;</div>
                     </div>
+                    <div class="eval-engine">
+                        <div class="eval-engine-head">
+                            <div class="eval-engine-title">Engine-Bewertung</div>
+                            <div class="eval-engine-btns">
+                                <button id="engine-deep" type="button" title="Stockfish lokal im Browser, Tiefe 20">Tiefer analysieren</button>
+                                <button id="engine-stop" type="button" class="sec" title="Laufende Analyse stoppen" style="display:none">Stop</button>
+                            </div>
+                        </div>
+                        <div class="eval-engine-row">
+                            <span class="eval-score-pill" id="eng-score">&mdash;</span>
+                            <span class="eval-source" id="eng-source">keine Quelle</span>
+                            <span class="eval-depth" id="eng-depth"></span>
+                        </div>
+                        <div class="eval-pv" id="eng-pv"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -162,6 +177,6 @@
 
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
-    <script src="chess.js?v=20"></script>
+    <script src="chess.js?v=21"></script>
 </body>
 </html>
