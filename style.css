@@ -402,7 +402,7 @@ header h1 {
 .analysis-head button:hover { background: #3a3a5a; color: #fff; }
 
 /* Theory */
-.theory-panel { min-width: 320px; }
+.theory-panel { min-width: 460px; }
 .theory-sub { color: #888; font-size: 0.78rem; margin-bottom: 10px; }
 .theory-opening {
     margin-top: 10px; padding-top: 10px;
@@ -413,8 +413,8 @@ header h1 {
 .theory-list { display: flex; flex-direction: column; gap: 6px; }
 .theory-row {
     display: grid;
-    grid-template-columns: 50px 60px 1fr;
-    gap: 10px;
+    grid-template-columns: 150px 70px 1fr;
+    gap: 12px;
     align-items: center;
     padding: 8px 10px;
     background: #1a2342;
@@ -424,6 +424,7 @@ header h1 {
     cursor: pointer;
     transition: background 0.15s;
 }
+.theory-san { white-space: nowrap; }
 .theory-row:hover { background: #253463; }
 .theory-san { color: #e8d5b5; font-weight: 700; font-size: 0.95rem; }
 .theory-games { color: #888; font-size: 0.78rem; text-align: right; }
