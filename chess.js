@@ -667,7 +667,7 @@ class FirebaseSync {
         }
     }
 
-    save(moves) {
+    save(moves, extra) {
         if (!this.gameRef) return;
         this.ignoreNext = true;
         const data = {
@@ -676,7 +676,10 @@ class FirebaseSync {
                 special: m.special || null, notation: m.notation
             })),
             updatedAt: Date.now(),
-            moveCount: moves.length
+            moveCount: moves.length,
+            startTime: (extra && extra.startTime) || null,
+            moveTs: (extra && extra.moveTs) || [],
+            moveDurationDays: (extra && extra.moveDurationDays) || 7
         };
         this.gameRef.set(data);
     }
@@ -697,12 +700,76 @@ class FirebaseSync {
 
 // ─── UI ──────────────────────────────────────────────────────────
 
+// ─── Berlin / DST helpers ────────────────────────────────────────
+
+function berlinParts(date) {
+    const parts = new Intl.DateTimeFormat('de-DE', {
+        timeZone: 'Europe/Berlin',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false, timeZoneName: 'short'
+    }).formatToParts(date);
+    const get = (k) => (parts.find(p => p.type === k) || {}).value;
+    return {
+        year: +get('year'), month: +get('month'), day: +get('day'),
+        hour: +get('hour'), minute: +get('minute'), second: +get('second'),
+        tz: get('timeZoneName') || ''
+    };
+}
+
+// Interpret (y,m,d,h,mi,s) as Europe/Berlin wall-clock time, return UTC Date
+function berlinWallToDate(y, m, d, h, mi, s) {
+    let utc = Date.UTC(y, m - 1, d, h, mi, s);
+    for (let i = 0; i < 3; i++) {
+        const p = berlinParts(new Date(utc));
+        const seen = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+        const diff = seen - utc;
+        if (diff === 0) break;
+        utc -= diff;
+    }
+    return new Date(utc);
+}
+
+// Add `days` calendar days on the Berlin wall-clock (DST-aware)
+function addBerlinDays(ts, days) {
+    const p = berlinParts(new Date(ts));
+    return berlinWallToDate(p.year, p.month, p.day + days, p.hour, p.minute, p.second).getTime();
+}
+
+function fmtBerlinFull(ts) {
+    if (!ts) return '—';
+    return new Intl.DateTimeFormat('de-DE', {
+        timeZone: 'Europe/Berlin',
+        dateStyle: 'short', timeStyle: 'medium'
+    }).format(new Date(ts));
+}
+
+function fmtDuration(ms) {
+    const neg = ms < 0;
+    ms = Math.abs(ms);
+    const s = Math.floor(ms / 1000);
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const mi = Math.floor((s % 3600) / 60);
+    const se = s % 60;
+    const pad = n => String(n).padStart(2, '0');
+    const str = `${d}d ${pad(h)}:${pad(mi)}:${pad(se)}`;
+    return neg ? '-' + str : str;
+}
+
+
 class ChessUI {
     constructor() {
         this.game = new ChessGame();
         this.flipped = false;
+        this.manualFlip = false;
         this.selectedSquare = null;
         this.validMoves = [];
+
+        // Game timing state
+        this.startTime = null;
+        this.moveTs = [];
+        this.moveDurationDays = 7;
 
         this.boardEl = document.getElementById('board');
         this.statusEl = document.getElementById('status');
@@ -713,7 +780,18 @@ class ChessUI {
         this.setupBoard();
         this.setupCoords();
         this.setupEvents();
+
+        // Analysis board
+        this.analysis = new AnalysisUI(this);
+
+        // Theory panel
+        this.theory = new TheoryPanel(this);
+
         this.render();
+
+        // Berlin clock tick
+        this.tickClocks();
+        setInterval(() => this.tickClocks(), 1000);
 
         // Firebase sync
         this.sync = new FirebaseSync((data) => this.onFirebaseUpdate(data));
@@ -774,6 +852,24 @@ class ChessUI {
         document.getElementById('flip-btn').addEventListener('click', () => this.onFlip());
         document.getElementById('export-btn').addEventListener('click', () => this.onExport());
         document.getElementById('fen-btn').addEventListener('click', () => this.onFEN());
+
+        const durSel = document.getElementById('move-duration');
+        if (durSel) {
+            durSel.addEventListener('change', () => {
+                this.moveDurationDays = parseInt(durSel.value, 10) || 7;
+                this.saveToStorage();
+                this.tickClocks();
+            });
+        }
+    }
+
+    autoFlip() {
+        if (this.manualFlip) return;
+        const want = this.game.turn === 'black';
+        if (want !== this.flipped) {
+            this.flipped = want;
+            this.updateCoords();
+        }
     }
 
     toBoardIndex(row, col) {
@@ -799,7 +895,6 @@ class ChessUI {
             if (move) {
                 // Handle promotion choice
                 if (move.special?.promotion && move.special.promotion !== 'Q') {
-                    // For click-based moves, auto-promote to queen
                     const queenMove = this.validMoves.find(m => m.tr === row && m.tc === col && m.special?.promotion === 'Q');
                     if (queenMove) {
                         this.game.makeMove(queenMove.fr, queenMove.fc, queenMove.tr, queenMove.tc, queenMove.special);
@@ -807,6 +902,7 @@ class ChessUI {
                 } else {
                     this.game.makeMove(move.fr, move.fc, move.tr, move.tc, move.special);
                 }
+                this.stampMove();
                 this.selectedSquare = null;
                 this.validMoves = [];
                 this.clearError();
@@ -843,6 +939,7 @@ class ChessUI {
             this.showError(result.error);
             return;
         }
+        this.stampMove();
         this.moveInput.value = '';
         this.selectedSquare = null;
         this.validMoves = [];
@@ -851,8 +948,15 @@ class ChessUI {
         this.saveToStorage();
     }
 
+    stampMove() {
+        const now = Date.now();
+        if (!this.startTime) this.startTime = now;
+        this.moveTs.push(now);
+    }
+
     onUndo() {
         if (this.game.undoMove()) {
+            if (this.moveTs.length) this.moveTs.pop();
             this.selectedSquare = null;
             this.validMoves = [];
             this.clearError();
@@ -864,6 +968,8 @@ class ChessUI {
     onReset() {
         if (this.game.moveHistory.length > 0 && !confirm('Neues Spiel starten? Alle Zuege gehen verloren.')) return;
         this.game.reset();
+        this.startTime = null;
+        this.moveTs = [];
         this.selectedSquare = null;
         this.validMoves = [];
         this.clearError();
@@ -873,6 +979,7 @@ class ChessUI {
 
     onFlip() {
         this.flipped = !this.flipped;
+        this.manualFlip = true;
         this.updateCoords();
         this.render();
     }
@@ -900,9 +1007,71 @@ class ChessUI {
     clearError() { this.errorEl.textContent = ''; }
 
     render() {
+        this.autoFlip();
         this.renderBoard();
         this.renderStatus();
         this.renderMoveList();
+        this.tickClocks();
+        if (this.analysis) this.analysis.onMainUpdated();
+        if (this.theory) this.theory.refresh(this.game.toFEN());
+    }
+
+    tickClocks() {
+        // Berlin clock
+        const now = Date.now();
+        const bd = document.getElementById('berlin-date');
+        const bt = document.getElementById('berlin-time');
+        const btz = document.getElementById('berlin-tz');
+        const ut = document.getElementById('utc-time');
+        if (bd && bt) {
+            const d = new Date(now);
+            const dateStr = new Intl.DateTimeFormat('de-DE', {
+                timeZone: 'Europe/Berlin', weekday: 'long',
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(d);
+            const timeStr = new Intl.DateTimeFormat('de-DE', {
+                timeZone: 'Europe/Berlin',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+            }).format(d);
+            bd.textContent = dateStr;
+            bt.textContent = timeStr;
+            const tz = berlinParts(d).tz;
+            btz.textContent = 'Zeitzone: Europe/Berlin (' + tz + ')';
+            ut.textContent = 'UTC ' + new Intl.DateTimeFormat('de-DE', {
+                timeZone: 'UTC',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+            }).format(d);
+        }
+        // Chess clock
+        const gs = document.getElementById('game-start');
+        const lm = document.getElementById('last-move-time');
+        const dl = document.getElementById('deadline-time');
+        const cd = document.getElementById('countdown');
+        const cdl = document.getElementById('countdown-label');
+        if (!gs || !lm || !dl || !cd || !cdl) return;
+
+        gs.textContent = this.startTime ? fmtBerlinFull(this.startTime) : '—';
+        const lastTs = this.moveTs.length ? this.moveTs[this.moveTs.length - 1] : this.startTime;
+        lm.textContent = lastTs ? fmtBerlinFull(lastTs) : '—';
+
+        if (lastTs) {
+            const deadline = addBerlinDays(lastTs, this.moveDurationDays);
+            dl.textContent = fmtBerlinFull(deadline);
+            const remain = deadline - now;
+            cd.textContent = fmtDuration(remain);
+            cd.classList.toggle('expired', remain < 0);
+            cd.classList.toggle('urgent', remain >= 0 && remain < 24 * 3600 * 1000);
+        } else {
+            dl.textContent = '—';
+            cd.textContent = '—';
+            cd.classList.remove('expired', 'urgent');
+        }
+        cdl.textContent = this.game.turn === 'white' ? 'Weiss am Zug' : 'Schwarz am Zug';
+
+        const sel = document.getElementById('move-duration');
+        if (sel && +sel.value !== this.moveDurationDays) {
+            sel.value = String(this.moveDurationDays);
+        }
     }
 
     renderBoard() {
@@ -993,29 +1162,39 @@ class ChessUI {
             fr: m.fr, fc: m.fc, tr: m.tr, tc: m.tc,
             special: m.special || null, notation: m.notation
         }));
-        try {
-            localStorage.setItem('fernschach', JSON.stringify({ moves, fen: this.game.toFEN() }));
-        } catch (e) { /* ignore */ }
-        // Sync to Firebase
+        const payload = {
+            moves, fen: this.game.toFEN(),
+            startTime: this.startTime,
+            moveTs: this.moveTs,
+            moveDurationDays: this.moveDurationDays
+        };
+        try { localStorage.setItem('fernschach', JSON.stringify(payload)); } catch (e) {}
         if (this.sync) {
-            this.sync.save(this.game.moveHistory);
+            this.sync.save(this.game.moveHistory, {
+                startTime: this.startTime,
+                moveTs: this.moveTs,
+                moveDurationDays: this.moveDurationDays
+            });
         }
     }
 
     loadFromStorage() {
-        // Don't load from localStorage if Firebase has data (Firebase takes priority)
-        // localStorage is only a fallback for offline mode
         try {
             const raw = localStorage.getItem('fernschach');
             if (!raw) return;
             const data = JSON.parse(raw);
-            if (!data.moves || data.moves.length === 0) return;
-
+            if (!data.moves || data.moves.length === 0) {
+                if (typeof data.moveDurationDays === 'number') this.moveDurationDays = data.moveDurationDays;
+                return;
+            }
             this.game.reset();
             for (const m of data.moves) {
                 const result = this.game.makeMove(m.fr, m.fc, m.tr, m.tc, m.special);
                 if (!result) break;
             }
+            this.startTime = data.startTime || null;
+            this.moveTs = Array.isArray(data.moveTs) ? data.moveTs : [];
+            if (typeof data.moveDurationDays === 'number') this.moveDurationDays = data.moveDurationDays;
             this.render();
         } catch (e) { /* ignore */ }
     }
@@ -1024,22 +1203,256 @@ class ChessUI {
         if (!data || !data.moves) return;
         const moves = data.moves;
 
-        // Replay all moves from Firebase
+        // Always rebuild from scratch — DB is source of truth
         this.game.reset();
         for (const m of moves) {
             const result = this.game.makeMove(m.fr, m.fc, m.tr, m.tc, m.special || null);
             if (!result) break;
         }
+        this.startTime = data.startTime || null;
+        this.moveTs = Array.isArray(data.moveTs) ? data.moveTs : [];
+        if (typeof data.moveDurationDays === 'number') this.moveDurationDays = data.moveDurationDays;
+
         this.selectedSquare = null;
         this.validMoves = [];
         this.render();
 
-        // Update localStorage
         try {
             localStorage.setItem('fernschach', JSON.stringify({
-                moves, fen: this.game.toFEN()
+                moves, fen: this.game.toFEN(),
+                startTime: this.startTime, moveTs: this.moveTs,
+                moveDurationDays: this.moveDurationDays
             }));
         } catch (e) { /* ignore */ }
+    }
+}
+
+
+// ─── Analyse-Brett ───────────────────────────────────────────────
+
+class AnalysisUI {
+    constructor(main) {
+        this.main = main;
+        this.game = new ChessGame();
+        this.flipped = false;
+        this.selected = null;
+        this.validMoves = [];
+
+        this.boardEl = document.getElementById('analysis-board');
+        if (!this.boardEl) return;
+        this.squares = [];
+        for (let i = 0; i < 64; i++) {
+            const sq = document.createElement('div');
+            sq.className = 'square';
+            sq.dataset.index = i;
+            sq.addEventListener('click', () => this.onSquareClick(i));
+            this.boardEl.appendChild(sq);
+            this.squares.push(sq);
+        }
+        this.setupCoords();
+
+        const resetBtn = document.getElementById('analysis-reset');
+        const undoBtn = document.getElementById('analysis-undo');
+        if (resetBtn) resetBtn.addEventListener('click', () => this.resetToMain());
+        if (undoBtn) undoBtn.addEventListener('click', () => {
+            if (this.game.undoMove()) { this.selected = null; this.validMoves = []; this.render(); }
+        });
+
+        this.resetToMain();
+    }
+
+    setupCoords() {
+        const b = document.getElementById('analysis-coords-bottom');
+        const l = document.getElementById('analysis-coords-left');
+        if (!b || !l) return;
+        b.innerHTML = ''; l.innerHTML = '';
+        for (let i = 0; i < 8; i++) {
+            const f = document.createElement('span');
+            f.textContent = this.flipped ? FILES[7 - i] : FILES[i];
+            b.appendChild(f);
+        }
+        for (let i = 0; i < 8; i++) {
+            const r = document.createElement('span');
+            r.textContent = this.flipped ? i + 1 : 8 - i;
+            l.appendChild(r);
+        }
+    }
+
+    toIdx(r, c) { return this.flipped ? (7 - r) * 8 + (7 - c) : r * 8 + c; }
+    fromIdx(i) {
+        let r = Math.floor(i / 8), c = i % 8;
+        if (this.flipped) { r = 7 - r; c = 7 - c; }
+        return [r, c];
+    }
+
+    onMainUpdated() {
+        // Mirror main board flip so view matches side-on-move
+        if (this.flipped !== this.main.flipped) {
+            this.flipped = this.main.flipped;
+            this.setupCoords();
+        }
+        // Auto-reset to match the real position (variant exploration restarts from current)
+        this.resetToMain();
+    }
+
+    resetToMain() {
+        if (!this.boardEl) return;
+        const fen = this.main.game.toFEN();
+        // Clone state via FEN-based reconstruction: replay all moves
+        this.game.reset();
+        for (const m of this.main.game.moveHistory) {
+            const r = this.game.makeMove(m.fr, m.fc, m.tr, m.tc, m.special || null);
+            if (!r) break;
+        }
+        this.selected = null;
+        this.validMoves = [];
+        this.render();
+    }
+
+    onSquareClick(i) {
+        const [r, c] = this.fromIdx(i);
+        const piece = this.game.at(r, c);
+        if (this.selected) {
+            const mv = this.validMoves.find(m => m.tr === r && m.tc === c);
+            if (mv) {
+                const special = mv.special?.promotion && mv.special.promotion !== 'Q'
+                    ? this.validMoves.find(m => m.tr === r && m.tc === c && m.special?.promotion === 'Q')?.special
+                    : mv.special;
+                this.game.makeMove(mv.fr, mv.fc, mv.tr, mv.tc, special);
+                this.selected = null; this.validMoves = [];
+                this.render();
+                return;
+            }
+            if (this.selected[0] === r && this.selected[1] === c) {
+                this.selected = null; this.validMoves = []; this.render(); return;
+            }
+        }
+        if (piece && piece.color === this.game.turn) {
+            this.selected = [r, c];
+            this.validMoves = this.game.getLegalMoves(r, c);
+        } else {
+            this.selected = null; this.validMoves = [];
+        }
+        this.render();
+    }
+
+    render() {
+        if (!this.boardEl) return;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const idx = this.toIdx(r, c);
+                const sq = this.squares[idx];
+                const piece = this.game.at(r, c);
+                sq.className = 'square ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+
+                if (this.game.lastMove) {
+                    const lm = this.game.lastMove;
+                    if (r === lm.fr && c === lm.fc) sq.classList.add('last-from');
+                    if (r === lm.tr && c === lm.tc) sq.classList.add('last-to');
+                }
+                if (this.selected && this.selected[0] === r && this.selected[1] === c) sq.classList.add('selected');
+                const isValid = this.validMoves.some(m => m.tr === r && m.tc === c);
+                if (isValid) {
+                    if (piece) sq.classList.add('valid-capture');
+                    else sq.classList.add('valid-move');
+                }
+                if (piece) {
+                    sq.textContent = PIECES[piece.type][piece.color];
+                    sq.classList.add('piece-' + piece.color);
+                } else sq.textContent = '';
+            }
+        }
+        const t = document.getElementById('analysis-turn');
+        if (t) t.textContent = (this.game.turn === 'white' ? 'Weiss' : 'Schwarz') + ' am Zug';
+    }
+}
+
+
+// ─── Theorie-Panel (Lichess Masters) ─────────────────────────────
+
+class TheoryPanel {
+    constructor(main) {
+        this.main = main;
+        this.listEl = document.getElementById('theory-list');
+        this.openingEl = document.getElementById('theory-opening');
+        this.subEl = document.getElementById('theory-sub');
+        this.lastFen = null;
+        this.inFlight = 0;
+    }
+
+    refresh(fen) {
+        if (!this.listEl) return;
+        if (fen === this.lastFen) return;
+        this.lastFen = fen;
+        const myReq = ++this.inFlight;
+        this.listEl.innerHTML = '<div class="moves-placeholder">Lade Theorie...</div>';
+        if (this.openingEl) this.openingEl.textContent = '';
+
+        const url = 'https://explorer.lichess.ovh/masters?fen=' + encodeURIComponent(fen) + '&moves=5&topGames=0';
+        fetch(url)
+            .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+            .then(data => {
+                if (myReq !== this.inFlight) return;
+                this.renderMasters(data);
+            })
+            .catch(() => {
+                if (myReq !== this.inFlight) return;
+                // Fallback: Lichess player DB
+                const url2 = 'https://explorer.lichess.ovh/lichess?fen=' + encodeURIComponent(fen)
+                    + '&moves=5&topGames=0&speeds=blitz,rapid,classical&ratings=2000,2200,2500';
+                fetch(url2)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (myReq !== this.inFlight) return;
+                        if (this.subEl) this.subEl.textContent = 'Lichess Spieler-Datenbank (2000+)';
+                        this.renderMasters(data);
+                    })
+                    .catch(() => {
+                        if (myReq !== this.inFlight) return;
+                        this.listEl.innerHTML = '<div class="moves-placeholder">Theorie derzeit nicht erreichbar.</div>';
+                    });
+            });
+    }
+
+    renderMasters(data) {
+        if (this.subEl) this.subEl.textContent = 'Lichess Masters-Datenbank';
+        if (this.openingEl) {
+            this.openingEl.textContent = data && data.opening
+                ? (data.opening.eco + ' — ' + data.opening.name)
+                : '';
+        }
+        const moves = (data && data.moves) || [];
+        if (!moves.length) {
+            this.listEl.innerHTML = '<div class="moves-placeholder">Keine Theorie-Zuege gefunden.</div>';
+            return;
+        }
+        const top = moves.slice(0, 5);
+        const totalGames = top.reduce((s, m) => s + (m.white + m.draws + m.black), 0);
+        this.listEl.innerHTML = '';
+        for (const m of top) {
+            const games = m.white + m.draws + m.black;
+            const pct = n => games ? Math.round(n / games * 100) : 0;
+            const row = document.createElement('div');
+            row.className = 'theory-row';
+            row.title = `${m.san}: ${games} Partien, Weiss ${pct(m.white)}% / Remis ${pct(m.draws)}% / Schwarz ${pct(m.black)}%`;
+            row.innerHTML = `
+                <div class="theory-san">${m.san}</div>
+                <div class="theory-games">${games.toLocaleString('de-DE')} P.</div>
+                <div class="theory-bar">
+                    <div class="bw" style="width:${pct(m.white)}%"><span>${pct(m.white)}%</span></div>
+                    <div class="bd" style="width:${pct(m.draws)}%"><span>${pct(m.draws)}%</span></div>
+                    <div class="bb" style="width:${pct(m.black)}%"><span>${pct(m.black)}%</span></div>
+                </div>
+            `;
+            row.addEventListener('click', () => {
+                const inp = document.getElementById('move-input');
+                if (inp) { inp.value = m.san; inp.focus(); }
+            });
+            this.listEl.appendChild(row);
+        }
+        if (this.subEl) {
+            this.subEl.textContent += ` — ${totalGames.toLocaleString('de-DE')} Partien in Top ${top.length}`;
+        }
     }
 }
 
