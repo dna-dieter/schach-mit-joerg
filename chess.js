@@ -744,6 +744,18 @@ function fmtBerlinFull(ts) {
     }).format(new Date(ts));
 }
 
+function svgEl(tag, attrs, text) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    if (text !== undefined) el.textContent = text;
+    return el;
+}
+
+// polar → svg coords: theta is radians clockwise from top (12 o'clock)
+function polar(r, theta) {
+    return [r * Math.sin(theta), -r * Math.cos(theta)];
+}
+
 function fmtDuration(ms) {
     const neg = ms < 0;
     ms = Math.abs(ms);
@@ -1081,10 +1093,11 @@ class ChessUI {
         const lastTs = this.moveTs.length ? this.moveTs[this.moveTs.length - 1] : this.startTime;
         lm.textContent = lastTs ? fmtBerlinFull(lastTs) : '—';
 
+        let remain = null;
         if (lastTs) {
             const deadline = addBerlinDays(lastTs, this.moveDurationDays);
             dl.textContent = fmtBerlinFull(deadline);
-            const remain = deadline - now;
+            remain = deadline - now;
             cd.textContent = fmtDuration(remain);
             cd.classList.toggle('expired', remain < 0);
             cd.classList.toggle('urgent', remain >= 0 && remain < 24 * 3600 * 1000);
@@ -1093,6 +1106,8 @@ class ChessUI {
             cd.textContent = '—';
             cd.classList.remove('expired', 'urgent');
         }
+        this.renderDaysDial(remain);
+        this.renderHoursDial(remain);
         cdl.textContent = this.game.turn === 'white' ? 'Weiss am Zug' : 'Schwarz am Zug';
 
         const sel = document.getElementById('move-duration');
@@ -1182,6 +1197,103 @@ class ChessUI {
 
         this.movesListEl.innerHTML = html;
         this.movesListEl.scrollTop = this.movesListEl.scrollHeight;
+    }
+
+    renderDaysDial(remainMs) {
+        const svg = document.getElementById('days-dial');
+        if (!svg) return;
+        const wrap = svg.parentElement;
+        svg.innerHTML = '';
+        const n = Math.max(1, this.moveDurationDays);
+        // Outer rim
+        svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 49, fill: 'none', stroke: '#8b6b3d', 'stroke-width': 0.6 }));
+        // Major tick + label at each of n positions (n at top, n-1 clockwise, ... down to 1)
+        for (let i = 0; i < n; i++) {
+            const theta = (i / n) * 2 * Math.PI;
+            const [x1, y1] = polar(42, theta);
+            const [x2, y2] = polar(48, theta);
+            svg.appendChild(svgEl('line', { x1, y1, x2, y2, class: 'dial-tick major' }));
+            const [lx, ly] = polar(34, theta);
+            const label = i === 0 ? n : (n - i);
+            svg.appendChild(svgEl('text', { x: lx, y: ly, class: 'dial-label' }, String(label)));
+        }
+        // Minor ticks: hours (24 per day gets crowded for n=7 → 168). Use fractions of days for sub-ticks every 0.25 day.
+        const minor = n * 4;
+        for (let i = 0; i < minor; i++) {
+            if (i % 4 === 0) continue;
+            const theta = (i / minor) * 2 * Math.PI;
+            const [x1, y1] = polar(46, theta);
+            const [x2, y2] = polar(48, theta);
+            svg.appendChild(svgEl('line', { x1, y1, x2, y2, class: 'dial-tick minor' }));
+        }
+        // Hand at remaining days
+        const remainDays = (remainMs == null || remainMs < 0) ? 0 : Math.min(n, remainMs / 86400000);
+        const theta = ((n - remainDays) / n) * 2 * Math.PI;
+        const [hx, hy] = polar(38, theta);
+        svg.appendChild(svgEl('line', { x1: 0, y1: 0, x2: hx, y2: hy, class: 'dial-hand day' }));
+        svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 3.5, class: 'dial-center' }));
+
+        const cap = document.getElementById('days-caption');
+        if (cap) {
+            const days = Math.max(0, Math.floor((remainMs || 0) / 86400000));
+            cap.textContent = `Tage (${days}/${n})`;
+        }
+        if (wrap) {
+            wrap.classList.toggle('urgent', remainMs != null && remainMs >= 0 && remainMs < 24 * 3600 * 1000);
+            wrap.classList.toggle('expired', remainMs != null && remainMs < 0);
+        }
+    }
+
+    renderHoursDial(remainMs) {
+        const svg = document.getElementById('hours-dial');
+        if (!svg) return;
+        const wrap = svg.parentElement;
+        svg.innerHTML = '';
+        const totalSec = (remainMs == null || remainMs < 0) ? 0 : remainMs / 1000;
+        const hourMod = (totalSec / 3600) % 24;        // 0..24 hours component
+        const minMod = (totalSec / 60) % 60;            // 0..60 minutes within hour
+        const isUpper = hourMod >= 12;
+        const vDial = isUpper ? (hourMod - 12) : hourMod; // 0..12
+
+        svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 49, fill: 'none', stroke: '#8b6b3d', 'stroke-width': 0.6 }));
+
+        // 12 major positions; labels decrease clockwise (countdown)
+        for (let i = 0; i < 12; i++) {
+            const theta = (i / 12) * 2 * Math.PI;
+            const [x1, y1] = polar(42, theta);
+            const [x2, y2] = polar(48, theta);
+            svg.appendChild(svgEl('line', { x1, y1, x2, y2, class: 'dial-tick major' }));
+            // Label
+            let label;
+            if (isUpper) label = i === 0 ? 24 : (24 - i);
+            else        label = i === 0 ? 12 : (12 - i);
+            const [lx, ly] = polar(34, theta);
+            svg.appendChild(svgEl('text', { x: lx, y: ly, class: 'dial-label' }, String(label)));
+        }
+        // Minor ticks for minutes (60)
+        for (let i = 0; i < 60; i++) {
+            if (i % 5 === 0) continue;
+            const theta = (i / 60) * 2 * Math.PI;
+            const [x1, y1] = polar(46, theta);
+            const [x2, y2] = polar(48, theta);
+            svg.appendChild(svgEl('line', { x1, y1, x2, y2, class: 'dial-tick minor' }));
+        }
+        // Hour hand (points to remaining-hours-on-scale; decreases clockwise)
+        const hourTheta = ((12 - vDial) / 12) * 2 * Math.PI;
+        const [hx, hy] = polar(25, hourTheta);
+        svg.appendChild(svgEl('line', { x1: 0, y1: 0, x2: hx, y2: hy, class: 'dial-hand hour' }));
+        // Minute hand
+        const minTheta = ((60 - minMod) / 60) * 2 * Math.PI;
+        const [mx, my] = polar(40, minTheta);
+        svg.appendChild(svgEl('line', { x1: 0, y1: 0, x2: mx, y2: my, class: 'dial-hand minute' }));
+        svg.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 3.5, class: 'dial-center' }));
+
+        const cap = document.getElementById('hours-caption');
+        if (cap) cap.textContent = isUpper ? '12 – 24 h' : '0 – 12 h';
+        if (wrap) {
+            wrap.classList.toggle('urgent', remainMs != null && remainMs >= 0 && remainMs < 24 * 3600 * 1000);
+            wrap.classList.toggle('expired', remainMs != null && remainMs < 0);
+        }
     }
 
     saveToStorage() {
@@ -1415,34 +1527,72 @@ class TheoryPanel {
         this.listEl.innerHTML = '<div class="moves-placeholder">Lade Theorie...</div>';
         if (this.openingEl) this.openingEl.textContent = '';
 
-        const url = 'https://explorer.lichess.ovh/masters?fen=' + encodeURIComponent(fen) + '&moves=5&topGames=0';
+        // Primary: chessdb.cn (kein Auth, CORS offen)
+        const url = 'https://www.chessdb.cn/cdb.php?action=queryall&board='
+            + encodeURIComponent(fen) + '&json=1';
         fetch(url)
             .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
             .then(data => {
                 if (myReq !== this.inFlight) return;
-                this.renderMasters(data);
+                if (data && data.status === 'ok' && Array.isArray(data.moves) && data.moves.length) {
+                    this.renderChessdb(data);
+                } else {
+                    this.tryLichessFallback(fen, myReq);
+                }
             })
             .catch(() => {
                 if (myReq !== this.inFlight) return;
-                // Fallback: Lichess player DB
-                const url2 = 'https://explorer.lichess.ovh/lichess?fen=' + encodeURIComponent(fen)
-                    + '&moves=5&topGames=0&speeds=blitz,rapid,classical&ratings=2000,2200,2500';
-                fetch(url2)
-                    .then(r => r.json())
-                    .then(data => {
-                        if (myReq !== this.inFlight) return;
-                        if (this.subEl) this.subEl.textContent = 'Lichess Spieler-Datenbank (2000+)';
-                        this.renderMasters(data);
-                    })
-                    .catch(() => {
-                        if (myReq !== this.inFlight) return;
-                        this.listEl.innerHTML = '<div class="moves-placeholder">Theorie derzeit nicht erreichbar.</div>';
-                    });
+                this.tryLichessFallback(fen, myReq);
             });
     }
 
-    renderMasters(data) {
-        if (this.subEl) this.subEl.textContent = 'Lichess Masters-Datenbank';
+    tryLichessFallback(fen, myReq) {
+        const url2 = 'https://explorer.lichess.ovh/lichess?fen=' + encodeURIComponent(fen)
+            + '&moves=5&topGames=0&speeds=blitz,rapid,classical&ratings=2000,2200,2500';
+        fetch(url2)
+            .then(r => r.ok ? r.json() : Promise.reject())
+            .then(data => {
+                if (myReq !== this.inFlight) return;
+                if (this.subEl) this.subEl.textContent = 'Lichess Spieler-Datenbank (2000+)';
+                this.renderLichess(data);
+            })
+            .catch(() => {
+                if (myReq !== this.inFlight) return;
+                this.listEl.innerHTML = '<div class="moves-placeholder">Keine Theorie-Zuege gefunden.</div>';
+            });
+    }
+
+    renderChessdb(data) {
+        if (this.subEl) this.subEl.textContent = 'chessdb.cn – Cloud-Eroeffnungsbuch';
+        if (this.openingEl) this.openingEl.textContent = '';
+        const moves = data.moves.slice(0, 5);
+        this.listEl.innerHTML = '';
+        for (const m of moves) {
+            const wr = parseFloat(m.winrate);
+            const wrW = isFinite(wr) ? wr : 50;
+            const wrB = 100 - wrW;
+            const note = (m.note || '').trim();
+            const scoreLabel = (m.score > 0 ? '+' : '') + m.score + ' cp';
+            const row = document.createElement('div');
+            row.className = 'theory-row';
+            row.title = `${m.san} ${note}  |  Score ${scoreLabel}  |  Winrate Weiss ${wrW.toFixed(1)}%`;
+            row.innerHTML = `
+                <div class="theory-san">${m.san} <span style="color:#aaa;font-weight:400">${note}</span></div>
+                <div class="theory-games">${scoreLabel}</div>
+                <div class="theory-bar">
+                    <div class="bw" style="width:${wrW}%"><span>${wrW.toFixed(0)}%</span></div>
+                    <div class="bb" style="width:${wrB}%"><span>${wrB.toFixed(0)}%</span></div>
+                </div>
+            `;
+            row.addEventListener('click', () => {
+                const inp = document.getElementById('move-input');
+                if (inp) { inp.value = m.san; inp.focus(); }
+            });
+            this.listEl.appendChild(row);
+        }
+    }
+
+    renderLichess(data) {
         if (this.openingEl) {
             this.openingEl.textContent = data && data.opening
                 ? (data.opening.eco + ' — ' + data.opening.name)
@@ -1454,7 +1604,6 @@ class TheoryPanel {
             return;
         }
         const top = moves.slice(0, 5);
-        const totalGames = top.reduce((s, m) => s + (m.white + m.draws + m.black), 0);
         this.listEl.innerHTML = '';
         for (const m of top) {
             const games = m.white + m.draws + m.black;
@@ -1476,9 +1625,6 @@ class TheoryPanel {
                 if (inp) { inp.value = m.san; inp.focus(); }
             });
             this.listEl.appendChild(row);
-        }
-        if (this.subEl) {
-            this.subEl.textContent += ` — ${totalGames.toLocaleString('de-DE')} Partien in Top ${top.length}`;
         }
     }
 }

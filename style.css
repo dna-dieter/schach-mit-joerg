@@ -111,6 +111,55 @@ header h1 {
 .chessclock-panel .countdown.expired { color: #e74c3c; }
 .chessclock-panel .countdown.urgent { color: #f39c12; }
 
+.analog-clocks {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 12px;
+}
+.analog-dial {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+.analog-dial svg {
+    width: 100px;
+    height: 100px;
+    background: radial-gradient(circle at 30% 25%, #fff1d0, #d8be8a 70%, #a88a52);
+    border-radius: 50%;
+    border: 3px solid #6b4e1e;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4), inset 0 0 8px rgba(0,0,0,0.15);
+}
+.analog-dial.urgent svg { border-color: #f39c12; }
+.analog-dial.expired svg {
+    border-color: #e74c3c;
+    background: radial-gradient(circle at 30% 25%, #ffe0dc, #e78a80 70%, #c0392b);
+}
+.dial-caption {
+    font-size: 0.7rem;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.dial-tick { stroke: #2a1a08; }
+.dial-tick.minor { stroke-width: 0.8; }
+.dial-tick.major { stroke-width: 1.8; }
+.dial-label {
+    fill: #2a1a08;
+    font-size: 9px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: central;
+    font-family: Georgia, 'Times New Roman', serif;
+}
+.dial-hand { stroke-linecap: round; }
+.dial-hand.hour { stroke: #1a1208; stroke-width: 3.5; }
+.dial-hand.minute { stroke: #2a1a08; stroke-width: 2; }
+.dial-hand.day { stroke: #8b0000; stroke-width: 3; }
+.dial-center { fill: #1a1208; }
+.dial-center-ring { fill: none; stroke: #8b0000; stroke-width: 0.6; }
+
 #move-duration {
     background: #1a1a2e; color: #ddd;
     border: 1px solid #3a3a5a; border-radius: 4px;
