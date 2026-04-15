@@ -1055,6 +1055,79 @@ class ChessUI {
         if (this.analysis) this.analysis.onMainUpdated();
         // Theory follows the analysis board (after onMainUpdated it mirrors main)
         if (this.theory && this.analysis) this.theory.refresh(this.analysis.game.toFEN());
+        this.updateEvaluation();
+    }
+
+    updateEvaluation() {
+        const g = this.analysis ? this.analysis.game : this.game;
+        const vals = { P: 1, N: 3, B: 3, R: 5, Q: 9, K: 0 };
+        let w = 0, b = 0, wPieces = 0, bPieces = 0;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = g.at(r, c);
+                if (!p) continue;
+                if (p.color === 'white') { w += vals[p.type]; if (p.type !== 'K') wPieces++; }
+                else { b += vals[p.type]; if (p.type !== 'K') bPieces++; }
+            }
+        }
+        const wEl = document.getElementById('eval-white');
+        const bEl = document.getElementById('eval-black');
+        if (wEl) wEl.textContent = w;
+        if (bEl) bEl.textContent = b;
+
+        const diffEl = document.getElementById('eval-diff');
+        const diff = w - b;
+        if (diffEl) {
+            diffEl.classList.remove('white-adv', 'black-adv');
+            if (diff === 0) diffEl.textContent = 'Material: Gleichstand (' + w + ':' + b + ')';
+            else if (diff > 0) {
+                diffEl.textContent = 'Weiss hat +' + diff + ' Material-Vorteil';
+                diffEl.classList.add('white-adv');
+            } else {
+                diffEl.textContent = 'Schwarz hat +' + (-diff) + ' Material-Vorteil';
+                diffEl.classList.add('black-adv');
+            }
+        }
+
+        // Phase
+        const moveN = g.moveNumber || 1;
+        const plies = g.moveHistory.length;
+        const totalMat = w + b;
+        let phase;
+        if (plies <= 20 && totalMat >= 66) phase = 'Eröffnungsphase';
+        else if (totalMat < 38) phase = 'Endspiel';
+        else phase = 'Mittelspiel';
+
+        const turn = g.turn === 'white' ? 'Weiss' : 'Schwarz';
+        const inCheck = g.inCheck(g.turn);
+
+        const lines = ['', '', ''];
+        lines[0] = 'Zug ' + moveN + ' · ' + phase + ' · ' + (plies + ' Halbzüge gespielt');
+
+        if (g.gameOver === 'checkmate') {
+            const winner = g.turn === 'white' ? 'Schwarz' : 'Weiss';
+            lines[1] = 'Schachmatt — ' + winner + ' gewinnt die Partie.';
+        } else if (g.gameOver === 'stalemate') {
+            lines[1] = 'Patt — Unentschieden.';
+        } else if (inCheck) {
+            lines[1] = turn + ' steht im Schach und muss reagieren. ' + (diff === 0 ? 'Material ausgeglichen.' : 'Materialstand ' + w + ':' + b + '.');
+        } else {
+            const mat = diff === 0 ? 'Material ausgeglichen' : (diff > 0 ? 'Weiss leicht vorne im Material' : 'Schwarz leicht vorne im Material');
+            lines[1] = turn + ' ist am Zug · ' + mat + '.';
+        }
+
+        const c = g.castling || { white: {}, black: {} };
+        const wC = (c.white && (c.white.K || c.white.Q)) ? ((c.white.K ? 'kurz' : '') + (c.white.K && c.white.Q ? '/' : '') + (c.white.Q ? 'lang' : '')) : null;
+        const bC = (c.black && (c.black.K || c.black.Q)) ? ((c.black.K ? 'kurz' : '') + (c.black.K && c.black.Q ? '/' : '') + (c.black.Q ? 'lang' : '')) : null;
+        const parts = [];
+        if (wC) parts.push('Weiss kann ' + wC + ' rochieren');
+        if (bC) parts.push('Schwarz kann ' + bC + ' rochieren');
+        lines[2] = parts.length ? parts.join(', ') + '.' : 'Beide Könige haben alle Rochaderechte verloren.';
+
+        for (let i = 0; i < 3; i++) {
+            const el = document.getElementById('eval-line-' + (i + 1));
+            if (el) el.textContent = lines[i];
+        }
     }
 
     tickClocks() {
@@ -1506,8 +1579,9 @@ class AnalysisUI {
         const t = document.getElementById('analysis-turn');
         if (t) t.textContent = (this.game.turn === 'white' ? 'Weiss' : 'Schwarz') + ' am Zug';
 
-        // Refresh theory for the new analysis FEN
+        // Refresh theory + evaluation for the new analysis FEN
         if (this.main && this.main.theory) this.main.theory.refresh(this.game.toFEN());
+        if (this.main) this.main.updateEvaluation();
     }
 
     applySan(san) {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fernschach</title>
-    <link rel="stylesheet" href="style.css?v=19">
+    <link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
     <div class="app">
@@ -125,19 +125,43 @@
                 </div>
             </div>
 
-            <div class="panel theory-panel">
-                <h2>Theorie &ndash; naechste Zuege</h2>
-                <div class="theory-sub" id="theory-sub">Lichess Masters-Datenbank</div>
-                <div class="theory-list" id="theory-list">
-                    <div class="moves-placeholder">Lade...</div>
+            <div class="right-col">
+                <div class="panel theory-panel">
+                    <h2>Theorie &ndash; naechste Zuege</h2>
+                    <div class="theory-sub" id="theory-sub">chessdb.cn &ndash; Cloud-Eroeffnungsbuch</div>
+                    <div class="theory-list" id="theory-list">
+                        <div class="moves-placeholder">Lade...</div>
+                    </div>
+                    <div class="theory-opening" id="theory-opening"></div>
                 </div>
-                <div class="theory-opening" id="theory-opening"></div>
+                <div class="panel evaluation-panel">
+                    <h2>Stellungsbeurteilung</h2>
+                    <div class="eval-scores">
+                        <div class="eval-score white">
+                            <div class="eval-side">Weiss</div>
+                            <div class="eval-value" id="eval-white">39</div>
+                            <div class="eval-unit">Material</div>
+                        </div>
+                        <div class="eval-vs">vs</div>
+                        <div class="eval-score black">
+                            <div class="eval-side">Schwarz</div>
+                            <div class="eval-value" id="eval-black">39</div>
+                            <div class="eval-unit">Material</div>
+                        </div>
+                    </div>
+                    <div class="eval-diff" id="eval-diff">Gleichstand</div>
+                    <div class="eval-text" id="eval-text">
+                        <div class="eval-line" id="eval-line-1">&mdash;</div>
+                        <div class="eval-line" id="eval-line-2">&mdash;</div>
+                        <div class="eval-line" id="eval-line-3">&mdash;</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
-    <script src="chess.js?v=19"></script>
+    <script src="chess.js?v=20"></script>
 </body>
 </html>
