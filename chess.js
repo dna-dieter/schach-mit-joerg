@@ -601,6 +601,43 @@ class ChessGame {
         return fen;
     }
 
+    fromFEN(fen) {
+        const parts = (fen || '').trim().split(/\s+/);
+        if (parts.length < 4) return false;
+        const [pos, stm, cast, ep, hm, mn] = parts;
+        const board = Array(8).fill(null).map(() => Array(8).fill(null));
+        const rows = pos.split('/');
+        if (rows.length !== 8) return false;
+        for (let r = 0; r < 8; r++) {
+            let c = 0;
+            for (const ch of rows[r]) {
+                if (/\d/.test(ch)) { c += +ch; continue; }
+                const isWhite = ch === ch.toUpperCase();
+                board[r][c] = { type: ch.toUpperCase(), color: isWhite ? 'white' : 'black' };
+                c++;
+            }
+        }
+        this.board = board;
+        this.turn = stm === 'b' ? 'black' : 'white';
+        this.castling = {
+            white: { K: cast.includes('K'), Q: cast.includes('Q') },
+            black: { K: cast.includes('k'), Q: cast.includes('q') }
+        };
+        if (ep && ep !== '-') {
+            const c = FILES.indexOf(ep[0]);
+            const r = RANKS.indexOf(ep[1]);
+            this.enPassant = (r >= 0 && c >= 0) ? [r, c] : null;
+        } else this.enPassant = null;
+        this.halfmoveClock = +hm || 0;
+        this.moveNumber = +mn || 1;
+        this.moveHistory = [];
+        this.positionHistory = [this.toFEN()];
+        this.selectedSquare = null;
+        this.lastMove = null;
+        this.gameOver = false;
+        return true;
+    }
+
     getMoveListText() {
         let text = '';
         for (let i = 0; i < this.moveHistory.length; i += 2) {
@@ -1666,15 +1703,39 @@ function formatCp(cp) {
     return (v >= 0 ? '+' : '') + v.toFixed(2);
 }
 
-// UCI-Move (e2e4, e7e8q) → SAN-Notation via unsere ChessGame
-function uciPvToSan(startFen, uciList) {
+// UCI (e2e4, e7e8q) → SAN via temporäre ChessGame ab FEN
+function uciPvToSan(startFen, uciList, maxMoves) {
     if (!uciList || !uciList.length) return '';
-    // Replay from start position using main board — use a fresh ChessGame + FEN load is not supported.
-    // Fallback: show UCI pretty-printed (e2e4 → e2-e4).
-    return uciList.slice(0, 8).map(u => {
-        if (u.length < 4) return u;
-        return u.slice(0, 2) + '-' + u.slice(2, 4) + (u.length > 4 ? '=' + u[4].toUpperCase() : '');
-    }).join(' ');
+    const limit = maxMoves || 10;
+    const g = new ChessGame();
+    if (!g.fromFEN(startFen)) {
+        // Fallback: pretty UCI
+        return uciList.slice(0, limit).map(u =>
+            u.length >= 4 ? u.slice(0, 2) + '-' + u.slice(2, 4) + (u.length > 4 ? '=' + u[4].toUpperCase() : '') : u
+        ).join(' ');
+    }
+    const out = [];
+    // Start numbering from the game's current move number and side
+    let moveNo = g.moveNumber;
+    let whiteToMove = g.turn === 'white';
+    // If black to move first, display "12..." prefix
+    if (!whiteToMove) out.push(moveNo + '...');
+    for (let i = 0; i < Math.min(uciList.length, limit); i++) {
+        const u = uciList[i];
+        if (!u || u.length < 4) break;
+        const fc = FILES.indexOf(u[0]);
+        const fr = RANKS.indexOf(u[1]);
+        const tc = FILES.indexOf(u[2]);
+        const tr = RANKS.indexOf(u[3]);
+        const promo = u.length > 4 ? u[4].toUpperCase() : null;
+        const res = g.tryCoordMove(fr, fc, tr, tc, promo);
+        if (!res || res.error || !res.move) break;
+        const san = res.move.notation || u;
+        if (whiteToMove) out.push(moveNo + '. ' + san);
+        else { out.push(san); moveNo++; }
+        whiteToMove = !whiteToMove;
+    }
+    return out.join(' ');
 }
 
 
