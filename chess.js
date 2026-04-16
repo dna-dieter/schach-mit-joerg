@@ -931,6 +931,25 @@ class ChessUI {
                 this.tickClocks();
             });
         }
+
+        // Flip-Einstellungen: aus localStorage laden + bei Aenderung speichern
+        const flipAxis = document.getElementById('flip-axis');
+        const flipDur = document.getElementById('flip-duration');
+        try {
+            const saved = JSON.parse(localStorage.getItem('fernschach-flip') || '{}');
+            if (saved.axis && flipAxis) flipAxis.value = saved.axis;
+            if (saved.duration != null && flipDur) flipDur.value = String(saved.duration);
+        } catch (e) {}
+        const saveFlipSettings = () => {
+            try {
+                localStorage.setItem('fernschach-flip', JSON.stringify({
+                    axis: flipAxis ? flipAxis.value : 'Z',
+                    duration: flipDur ? parseInt(flipDur.value, 10) : 5000
+                }));
+            } catch (e) {}
+        };
+        if (flipAxis) flipAxis.addEventListener('change', saveFlipSettings);
+        if (flipDur) flipDur.addEventListener('change', saveFlipSettings);
     }
 
     getFlipAxis() {
@@ -940,7 +959,9 @@ class ChessUI {
 
     getFlipDuration() {
         const el = document.getElementById('flip-duration');
-        return el ? parseInt(el.value, 10) || 5000 : 5000;
+        if (!el) return 5000;
+        const v = parseInt(el.value, 10);
+        return isNaN(v) ? 5000 : v;
     }
 
     autoFlip() {
