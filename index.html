@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fernschach</title>
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
     <div class="app">
@@ -74,7 +74,6 @@
 
             <div class="board-container">
                 <div class="board" id="board"></div>
-                <div class="flip-overlay" id="flip-overlay">Brett drehen</div>
                 <div class="coords-bottom" id="coords-bottom"></div>
                 <div class="coords-left" id="coords-left"></div>
             </div>
@@ -103,6 +102,29 @@
                     <button id="flip-btn" title="Brett drehen">Brett drehen</button>
                     <button id="export-btn" title="Zugliste kopieren">Zugliste kopieren</button>
                     <button id="fen-btn" title="FEN kopieren">FEN kopieren</button>
+                </div>
+                <div class="panel flip-panel">
+                    <h2>Brett-Drehung</h2>
+                    <div class="flip-settings">
+                        <label>
+                            <span class="flip-label">Achse</span>
+                            <select id="flip-axis">
+                                <option value="Z" selected>Z – Draufsicht</option>
+                                <option value="Y">Y – horizontal</option>
+                                <option value="X">X – vertikal</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span class="flip-label">Dauer</span>
+                            <select id="flip-duration">
+                                <option value="2000">2 s</option>
+                                <option value="3000">3 s</option>
+                                <option value="4000">4 s</option>
+                                <option value="5000" selected>5 s</option>
+                                <option value="10000">10 s</option>
+                            </select>
+                        </label>
+                    </div>
                 </div>
             </div>
         </div>
@@ -175,8 +197,6 @@
         </div>
     </div>
 
-    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
-    <script src="chess.js?v=22"></script>
+    <script src="chess.js?v=24"></script>
 </body>
 </html>

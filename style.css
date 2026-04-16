@@ -327,44 +327,77 @@ header h1 {
     flex-shrink: 0;
 }
 
-.flip-overlay {
+/* 3D Board Flip */
+.board-container {
+    perspective: 1200px;
+}
+.flip-3d-scene {
     position: absolute;
     top: 0; left: 0;
     width: 520px; height: 520px;
+    z-index: 15;
+    pointer-events: none;
+}
+.flip-3d-rotator {
+    width: 100%; height: 100%;
+    transform-style: preserve-3d;
+    position: relative;
+}
+.flip-3d-face {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    backface-visibility: hidden;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    border: 3px solid #e8d5b5;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.flip-3d-face.back {
+    transform: rotateY(180deg);
+}
+.flip-3d-face .sq {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(10, 15, 30, 0.72);
-    color: #e8d5b5;
-    font-size: 1.8rem;
-    font-weight: 700;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    border-radius: 4px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.35s ease;
-    z-index: 20;
+    font-size: 46px;
+    font-family: 'DejaVu Sans', 'Noto Sans Symbols 2', 'Segoe UI Symbol', 'Arial Unicode MS', sans-serif;
+    font-variant-emoji: text;
+    user-select: none;
 }
-.flip-overlay.show { opacity: 1; }
-.flip-overlay::before {
-    content: '↻';
-    font-size: 2.4rem;
-    margin-right: 14px;
-    display: inline-block;
-    animation: flip-spin 1.2s linear infinite;
+.flip-3d-face .sq.light { background: #f0d9b5; }
+.flip-3d-face .sq.dark { background: #b58863; }
+.flip-3d-face .sq.last-from { background: rgba(255,255,100,0.4) !important; }
+.flip-3d-face .sq.last-to { background: rgba(255,255,100,0.5) !important; }
+.flip-3d-face .sq.piece-white { -webkit-text-fill-color: #fff; -webkit-text-stroke: 0.5px #333; color: #fff; }
+.flip-3d-face .sq.piece-black { -webkit-text-fill-color: #111; -webkit-text-stroke: 1px #111; color: #111; }
+
+/* Z-Achse: Glyph-Gegen-Rotation via CSS Custom Property */
+.flip-3d-face { --crot: 0deg; }
+.flip-3d-face .sq .glyph { display: inline-block; transform: rotate(var(--crot)); }
+
+/* Flip settings panel */
+.flip-panel .flip-settings {
+    display: flex; gap: 12px;
 }
-@keyframes flip-spin {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(360deg); }
+.flip-panel .flip-settings label {
+    display: flex; flex-direction: column; gap: 4px; flex: 1;
+}
+.flip-panel .flip-label {
+    font-size: 0.7rem; color: #888;
+    text-transform: uppercase; letter-spacing: 0.5px;
+}
+.flip-panel .flip-settings select {
+    background: #1a1a2e; color: #ddd;
+    border: 1px solid #3a3a5a; border-radius: 4px;
+    padding: 4px 8px; font-family: inherit; font-size: 0.8rem;
 }
 
 @media (max-width: 700px) {
-    .flip-overlay {
-        width: min(520px, 95vw);
-        height: min(520px, 95vw);
-        font-size: 1.3rem;
-    }
+    .flip-3d-scene { width: min(520px, 95vw); height: min(520px, 95vw); }
+    .flip-3d-face .sq { font-size: min(46px, 10vw); }
 }
 
 .board {

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schachbrett drehen – 3D Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            gap: 24px;
+        }
+        h1 { color: #e8d5b5; font-size: 1.4rem; letter-spacing: 1px; }
+
+        .scene {
+            perspective: 1200px;
+            perspective-origin: 50% 50%;
+            width: 480px;
+            height: 480px;
+        }
+
+        .board-3d {
+            width: 480px;
+            height: 480px;
+            transform-style: preserve-3d;
+            position: relative;
+        }
+
+        .board-grid {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            grid-template-rows: repeat(8, 1fr);
+            border-radius: 6px;
+            overflow: hidden;
+            border: 3px solid #e8d5b5;
+        }
+
+        .sq {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 42px;
+            font-family: 'DejaVu Sans', 'Noto Sans Symbols 2', 'Segoe UI Symbol', sans-serif;
+            font-variant-emoji: text;
+            user-select: none;
+        }
+        .sq.light { background: #f0d9b5; }
+        .sq.dark { background: #b58863; }
+        .sq.piece-white { -webkit-text-fill-color: #fff; -webkit-text-stroke: 0.5px #333; color: #fff; }
+        .sq.piece-black { -webkit-text-fill-color: #111; -webkit-text-stroke: 1px #111; color: #111; }
+        /* Z-Achse: Figuren gegen-rotieren via CSS Custom Property (performant) */
+        .board-grid { --crot: 0deg; }
+        .sq .glyph { display: inline-block; transform: rotate(var(--crot)); }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        button {
+            padding: 10px 20px;
+            background: #e8d5b5;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        button:hover { background: #d4c1a0; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.sec { background: #2a2a4a; color: #ccc; border: 1px solid #3a3a5a; }
+        button.sec:hover { background: #3a3a5a; color: #fff; }
+
+        .info {
+            font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+            font-size: 0.9rem;
+            color: #aaa;
+            text-align: center;
+        }
+        .info .deg { color: #e8d5b5; font-weight: 700; font-size: 1.1rem; }
+
+        .settings {
+            display: flex; gap: 16px; align-items: center;
+            font-size: 0.85rem; color: #aaa;
+            flex-wrap: wrap; justify-content: center;
+        }
+        .settings label { display: flex; align-items: center; gap: 6px; }
+        .settings select {
+            background: #1a1a2e; color: #ddd;
+            border: 1px solid #3a3a5a; border-radius: 4px;
+            padding: 4px 8px; font-family: inherit; font-size: 0.85rem;
+        }
+        .axis-desc {
+            font-size: 0.78rem; color: #666;
+            text-align: center; max-width: 500px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Schachbrett-Drehung – 3D Demo</h1>
+
+    <div class="scene">
+        <div class="board-3d" id="board3d"></div>
+    </div>
+
+    <div class="info">
+        <span>Winkel: </span><span class="deg" id="angle-display">0°</span>
+        <span> &nbsp;|&nbsp; Schritt: </span><span id="step-display">—</span>
+        <span> &nbsp;|&nbsp; Seite: </span><span id="side-display">Weiss</span>
+    </div>
+
+    <div class="controls">
+        <button id="btn-rotate">180° drehen</button>
+        <button id="btn-back" class="sec">Zurueck drehen</button>
+    </div>
+
+    <div class="settings">
+        <label>Dauer:
+            <select id="sel-duration">
+                <option value="2000">2 s</option>
+                <option value="3000">3 s</option>
+                <option value="4000">4 s</option>
+                <option value="5000">5 s</option>
+                <option value="10000" selected>10 s</option>
+                <option value="20000">20 s</option>
+            </select>
+        </label>
+        <label>Achse:
+            <select id="sel-axis">
+                <option value="Y" selected>Y – horizontal</option>
+                <option value="X">X – vertikal</option>
+                <option value="Z">Z – Draufsicht</option>
+            </select>
+        </label>
+    </div>
+    <div class="axis-desc" id="axis-desc">
+        Y-Achse: Brett dreht sich horizontal wie eine Tuer (links/rechts).
+    </div>
+
+    <script>
+    // ─── Board rendering ────────────────────────────────────────
+    const PIECES_UNI = {
+        K: '\u265A', Q: '\u265B', R: '\u265C', B: '\u265D', N: '\u265E', P: '\u265F'
+    };
+
+    const START = [
+        ['r','n','b','q','k','b','n','r'],
+        ['p','p','p','p','p','p','p','p'],
+        [' ',' ',' ',' ',' ',' ',' ',' '],
+        [' ',' ',' ',' ',' ',' ',' ',' '],
+        [' ',' ',' ',' ',' ',' ',' ',' '],
+        [' ',' ',' ',' ',' ',' ',' ',' '],
+        ['P','P','P','P','P','P','P','P'],
+        ['R','N','B','Q','K','B','N','R']
+    ];
+
+    function buildGrid(flipped) {
+        const grid = document.createElement('div');
+        grid.className = 'board-grid';
+        for (let vi = 0; vi < 8; vi++) {
+            for (let vj = 0; vj < 8; vj++) {
+                const r = flipped ? 7 - vi : vi;
+                const c = flipped ? 7 - vj : vj;
+                const sq = document.createElement('div');
+                sq.className = 'sq ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+                const ch = START[r][c];
+                if (ch !== ' ') {
+                    var span = document.createElement('span');
+                    span.className = 'glyph';
+                    span.textContent = PIECES_UNI[ch.toUpperCase()];
+                    sq.appendChild(span);
+                    sq.classList.add(ch === ch.toUpperCase() ? 'piece-white' : 'piece-black');
+                }
+                grid.appendChild(sq);
+            }
+        }
+        return grid;
+    }
+
+    // ─── State ──────────────────────────────────────────────────
+    const board3d = document.getElementById('board3d');
+    const angleDisp = document.getElementById('angle-display');
+    const stepDisp = document.getElementById('step-display');
+    const sideDisp = document.getElementById('side-display');
+    const btnRotate = document.getElementById('btn-rotate');
+    const btnBack = document.getElementById('btn-back');
+    const selDuration = document.getElementById('sel-duration');
+    const selAxis = document.getElementById('sel-axis');
+    const axisDesc = document.getElementById('axis-desc');
+
+    const AXIS_DESCRIPTIONS = {
+        Y: 'Y-Achse: Brett dreht sich horizontal wie eine Tuer (links/rechts).',
+        X: 'X-Achse: Brett kippt vertikal nach hinten/vorne.',
+        Z: 'Z-Achse: Brett dreht sich in der Ebene (Draufsicht, wie ein Plattenspieler).'
+    };
+
+    let currentAngle = 0;
+    let showingFlipped = false;
+    let animating = false;
+
+    // Einzelnes Brett (Swap-at-90° Technik fuer X/Y; volle 180° fuer Z)
+    board3d.appendChild(buildGrid(false));
+
+    function setTransform(deg) {
+        const axis = selAxis.value;
+        board3d.style.transform = 'rotate' + axis + '(' + deg + 'deg)';
+        angleDisp.textContent = Math.round(deg) + '\u00B0';
+    }
+
+    function swapContent(flipped) {
+        if (showingFlipped === flipped) return;
+        showingFlipped = flipped;
+        board3d.innerHTML = '';
+        board3d.appendChild(buildGrid(flipped));
+        sideDisp.textContent = flipped ? 'Schwarz' : 'Weiss';
+    }
+
+    // ─── Animation (requestAnimationFrame, zeitbasiert) ────────
+    function animateRotation(toAngle, durationMs) {
+        if (animating) return;
+        animating = true;
+        setButtons(false);
+
+        const axis = selAxis.value;
+        const fromAngle = currentAngle;
+        const totalDeg = toAngle - fromAngle;
+        if (totalDeg === 0) { animating = false; setButtons(true); return; }
+        const goingForward = totalDeg > 0;
+        const midAngle = fromAngle + totalDeg / 2;  // 90° Punkt
+        let swapped = false;
+
+        var zGrid = (axis === 'Z') ? board3d.querySelector('.board-grid') : null;
+        const totalSteps = Math.abs(Math.round(totalDeg));
+
+        const t0 = performance.now();
+        function tick(now) {
+            const elapsed = now - t0;
+            const progress = Math.min(1, elapsed / durationMs);
+            const deg = fromAngle + totalDeg * progress;
+            currentAngle = deg;
+            setTransform(deg);
+            const stepNow = Math.round(Math.abs(totalDeg * progress));
+            stepDisp.textContent = stepNow + ' / ' + totalSteps;
+
+            // Z-Achse: Glyph-Gegenrotation
+            if (zGrid) {
+                zGrid.style.setProperty('--crot', (-deg) + 'deg');
+            }
+
+            // X/Y: Swap bei 90° (Kante)
+            if (!swapped && axis !== 'Z') {
+                const pastMid = goingForward ? deg >= midAngle : deg <= midAngle;
+                if (pastMid) {
+                    swapped = true;
+                    swapContent(!showingFlipped);
+                    if (axis === 'X' && goingForward) {
+                        var grid = board3d.querySelector('.board-grid');
+                        if (grid) grid.style.transform = 'scaleY(-1)';
+                    }
+                }
+            }
+
+            if (progress >= 1) {
+                currentAngle = toAngle;
+                setTransform(toAngle);
+                animating = false;
+                setButtons(true);
+                stepDisp.textContent = totalSteps + ' / ' + totalSteps + ' — fertig';
+            } else {
+                requestAnimationFrame(tick);
+            }
+        }
+        requestAnimationFrame(tick);
+    }
+
+    function setButtons(enabled) {
+        btnRotate.disabled = !enabled;
+        btnBack.disabled = !enabled;
+    }
+
+    // ─── Events ─────────────────────────────────────────────────
+    btnRotate.addEventListener('click', function() {
+        var dur = parseInt(selDuration.value, 10);
+        var target = currentAngle < 90 ? 180 : 0;
+        animateRotation(target, dur);
+    });
+
+    btnBack.addEventListener('click', function() {
+        var dur = parseInt(selDuration.value, 10);
+        animateRotation(0, dur);
+    });
+
+    selAxis.addEventListener('change', function() {
+        // Reset bei Achsenwechsel
+        currentAngle = 0;
+        setTransform(0);
+        swapContent(false);
+        axisDesc.textContent = AXIS_DESCRIPTIONS[selAxis.value] || '';
+        stepDisp.textContent = '—';
+    });
+
+    setTransform(0);
+    </script>
+</body>
+</html>

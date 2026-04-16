@@ -653,60 +653,67 @@ class ChessGame {
 }
 
 
-// ─── Firebase Sync ───────────────────────────────────────────────
+// ─── Firebase Sync (REST API + SSE, kein SDK, kein API Key) ─────
 
-const firebaseConfig = {
-    apiKey: "AIzaSyC_YhCKhA-cXlfNfdr9hgoWFm3hf0f78Lk",
-    authDomain: "schach-mit-joerg.firebaseapp.com",
-    projectId: "schach-mit-joerg",
-    storageBucket: "schach-mit-joerg.firebasestorage.app",
-    messagingSenderId: "58216476791",
-    appId: "1:58216476791:web:c9ac721bdbf0b4d2065672",
-    databaseURL: "https://schach-mit-joerg-default-rtdb.europe-west1.firebasedatabase.app"
-};
+const DB_BASE = 'https://schach-mit-joerg-default-rtdb.europe-west1.firebasedatabase.app';
+const GAME_PATH = '/games/default';
 
 class FirebaseSync {
     constructor(onUpdate) {
         this.onUpdate = onUpdate;
-        this.db = null;
-        this.gameRef = null;
         this.connected = false;
-        this.ignoreNext = false;
+        this.ignoreUntil = 0;
         this.init();
     }
 
     init() {
         try {
-            const app = firebase.initializeApp(firebaseConfig);
-            this.db = firebase.database();
-            this.gameRef = this.db.ref('games/default');
+            const url = DB_BASE + GAME_PATH + '.json';
+            this.sse = new EventSource(url);
 
-            // Connection status
-            this.db.ref('.info/connected').on('value', (snap) => {
-                this.connected = snap.val() === true;
+            this.sse.addEventListener('put', (e) => {
+                if (Date.now() < this.ignoreUntil) return;
+                try {
+                    const msg = JSON.parse(e.data);
+                    const data = msg.path === '/' ? msg.data : null;
+                    if (data && this.onUpdate) this.onUpdate(data);
+                } catch (err) { /* ignore parse errors */ }
+            });
+
+            this.sse.addEventListener('patch', (e) => {
+                if (Date.now() < this.ignoreUntil) return;
+                // patch = partial update; re-fetch full state
+                this.fetchOnce();
+            });
+
+            this.sse.onopen = () => {
+                this.connected = true;
                 this.updateStatusUI();
-            });
+            };
 
-            // Listen for changes from other players
-            this.gameRef.on('value', (snap) => {
-                if (this.ignoreNext) {
-                    this.ignoreNext = false;
-                    return;
-                }
-                const data = snap.val();
-                if (data && this.onUpdate) {
-                    this.onUpdate(data);
-                }
-            });
+            this.sse.onerror = () => {
+                this.connected = false;
+                this.updateStatusUI();
+                // EventSource reconnects automatically
+            };
         } catch (e) {
-            console.error('Firebase init error:', e);
+            console.error('Firebase SSE init error:', e);
             this.updateStatusUI();
         }
     }
 
-    save(moves, extra) {
-        if (!this.gameRef) return;
-        this.ignoreNext = true;
+    async fetchOnce() {
+        try {
+            const r = await fetch(DB_BASE + GAME_PATH + '.json');
+            if (!r.ok) return;
+            const data = await r.json();
+            if (data && this.onUpdate) this.onUpdate(data);
+        } catch (e) { /* ignore */ }
+    }
+
+    async save(moves, extra) {
+        // Suppress SSE echo for 2 seconds after our own write
+        this.ignoreUntil = Date.now() + 2000;
         const data = {
             moves: moves.map(m => ({
                 fr: m.fr, fc: m.fc, tr: m.tr, tc: m.tc,
@@ -718,7 +725,15 @@ class FirebaseSync {
             moveTs: (extra && extra.moveTs) || [],
             moveDurationDays: (extra && extra.moveDurationDays) || 7
         };
-        this.gameRef.set(data);
+        try {
+            await fetch(DB_BASE + GAME_PATH + '.json', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        } catch (e) {
+            console.error('Firebase save error:', e);
+        }
     }
 
     updateStatusUI() {
@@ -918,6 +933,16 @@ class ChessUI {
         }
     }
 
+    getFlipAxis() {
+        const el = document.getElementById('flip-axis');
+        return el ? el.value : 'Z';
+    }
+
+    getFlipDuration() {
+        const el = document.getElementById('flip-duration');
+        return el ? parseInt(el.value, 10) || 5000 : 5000;
+    }
+
     autoFlip() {
         if (this.manualFlip) return;
         const want = this.game.turn === 'black';
@@ -934,20 +959,122 @@ class ChessUI {
         if (this._flipping) return;
         this._flipping = true;
 
-        const overlay = document.getElementById('flip-overlay');
-        // Phase 1: 1s delay with piece on its final square
-        setTimeout(() => {
-            if (overlay) overlay.classList.add('show');
-            // Phase 2: 2s overlay, then rotate
-            setTimeout(() => {
-                this.flipped = want;
-                this.updateCoords();
-                this.renderBoard();
-                if (this.analysis) this.analysis.onMainUpdated();
-                if (overlay) overlay.classList.remove('show');
-                this._flipping = false;
-            }, 2000);
-        }, 1000);
+        const axis = this.getFlipAxis();
+        const duration = this.getFlipDuration();
+
+        // 0.8s pause damit der letzte Zug sichtbar ist, dann 3D-Drehung
+        setTimeout(() => this.animateFlip3D(want, duration, axis, () => {
+            this._flipping = false;
+        }), 800);
+    }
+
+    animateFlip3D(newFlipped, durationMs, axis, onDone) {
+        if (axis === 'Z') {
+            this.animateFlipZ(newFlipped, durationMs, onDone);
+        } else {
+            this.animateFlipXY(newFlipped, durationMs, axis, onDone);
+        }
+    }
+
+    // Gemeinsame Abschluss-Logik nach jeder Dreh-Animation
+    finishFlip(scene, newFlipped, onDone) {
+        const container = this.boardEl.parentElement;
+        if (scene.parentElement) container.removeChild(scene);
+        this.flipped = newFlipped;
+        this.updateCoords();
+        this.renderBoard();
+        this.boardEl.style.visibility = 'visible';
+        if (this.analysis) this.analysis.onMainUpdated();
+        if (onDone) onDone();
+    }
+
+    // Y/X-Achse: Zwei-Flächen-Technik
+    animateFlipXY(newFlipped, durationMs, axis, onDone) {
+        const container = this.boardEl.parentElement;
+
+        const scene = document.createElement('div');
+        scene.className = 'flip-3d-scene';
+        const rotator = document.createElement('div');
+        rotator.className = 'flip-3d-rotator';
+
+        const front = this.createBoardSnapshot(this.flipped);
+        front.className = 'flip-3d-face';
+        const back = this.createBoardSnapshot(newFlipped);
+        back.className = 'flip-3d-face back';
+        if (axis === 'X') back.style.transform = 'rotateX(180deg)';
+
+        rotator.appendChild(front);
+        rotator.appendChild(back);
+        scene.appendChild(rotator);
+        container.appendChild(scene);
+        this.boardEl.style.visibility = 'hidden';
+
+        const t0 = performance.now();
+        const tick = (now) => {
+            const elapsed = now - t0;
+            const deg = Math.min(180, (elapsed / durationMs) * 180);
+            rotator.style.transform = 'rotate' + axis + '(' + deg + 'deg)';
+            if (deg >= 180) {
+                this.finishFlip(scene, newFlipped, onDone);
+            } else {
+                requestAnimationFrame(tick);
+            }
+        };
+        requestAnimationFrame(tick);
+    }
+
+    // Z-Achse: Einzelfläche mit Glyph-Gegenrotation
+    animateFlipZ(newFlipped, durationMs, onDone) {
+        const container = this.boardEl.parentElement;
+
+        const scene = document.createElement('div');
+        scene.className = 'flip-3d-scene';
+        const face = this.createBoardSnapshot(this.flipped);
+        face.className = 'flip-3d-face';
+        scene.appendChild(face);
+        container.appendChild(scene);
+        this.boardEl.style.visibility = 'hidden';
+
+        const t0 = performance.now();
+        const tick = (now) => {
+            const elapsed = now - t0;
+            const deg = Math.min(180, (elapsed / durationMs) * 180);
+            scene.style.transform = 'rotateZ(' + deg + 'deg)';
+            face.style.setProperty('--crot', (-deg) + 'deg');
+            if (deg >= 180) {
+                this.finishFlip(scene, newFlipped, onDone);
+            } else {
+                requestAnimationFrame(tick);
+            }
+        };
+        requestAnimationFrame(tick);
+    }
+
+    createBoardSnapshot(flipped) {
+        const face = document.createElement('div');
+        for (let vi = 0; vi < 8; vi++) {
+            for (let vj = 0; vj < 8; vj++) {
+                const r = flipped ? 7 - vi : vi;
+                const c = flipped ? 7 - vj : vj;
+                const sq = document.createElement('div');
+                sq.className = 'sq ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+                if (this.game.lastMove) {
+                    const lm = this.game.lastMove;
+                    if (r === lm.fr && c === lm.fc) sq.classList.add('last-from');
+                    if (r === lm.tr && c === lm.tc) sq.classList.add('last-to');
+                }
+                const piece = this.game.at(r, c);
+                if (piece) {
+                    const glyph = document.createElement('span');
+                    glyph.className = 'glyph';
+                    glyph.textContent = PIECES[piece.type][piece.color];
+                    sq.appendChild(glyph);
+                    sq.classList.add('piece-' + piece.color);
+                }
+                face.appendChild(sq);
+            }
+        }
+        return face;
     }
 
     toBoardIndex(row, col) {
